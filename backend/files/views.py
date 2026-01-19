@@ -1,9 +1,11 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from django.http import FileResponse, Http404
 from .models import UploadedFile
 from .serializers import FileSerializer
 import hashlib
+import os
 
 class FileViewSet(viewsets.ModelViewSet):
     queryset = UploadedFile.objects.all()
@@ -14,7 +16,7 @@ class FileViewSet(viewsets.ModelViewSet):
         sha256 = hashlib.sha256()
         for chunk in file.chunks():
             sha256.update(chunk)
-        file.seek(0)  # Reset file pointer
+        file.seek(0)
         return sha256.hexdigest()
     
     def create(self, request):
@@ -26,20 +28,17 @@ class FileViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Calculate file hash
         file_hash = self.calculate_hash(uploaded_file)
         
-        # Check for existing file with same hash
         existing_file = UploadedFile.objects.filter(
             file_hash=file_hash, 
             is_duplicate=False
         ).first()
         
         if existing_file:
-            # DUPLICATE FOUND - Don't store file again, just create reference
             duplicate = UploadedFile.objects.create(
                 name=uploaded_file.name,
-                file=existing_file.file,  # Point to existing file
+                file=existing_file.file,
                 file_size=uploaded_file.size,
                 file_type=uploaded_file.content_type or 'unknown',
                 file_hash=file_hash,
@@ -54,7 +53,6 @@ class FileViewSet(viewsets.ModelViewSet):
                 'file': serializer.data
             }, status=status.HTTP_201_CREATED)
         
-        # NEW FILE - Store it
         new_file = UploadedFile.objects.create(
             name=uploaded_file.name,
             file=uploaded_file,
@@ -72,24 +70,55 @@ class FileViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
     
     def list(self, request):
-        files = self.get_queryset()
-        serializer = FileSerializer(files, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['get'])
-    def search(self, request):
-        """Search files by name, type, or date"""
+        """List files with optional search and filter"""
         queryset = self.get_queryset()
         
-        # Filter by name
-        name = request.query_params.get('name', None)
-        if name:
-            queryset = queryset.filter(name__icontains=name)
+        search = request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(name__icontains=search)
         
-        # Filter by type
         file_type = request.query_params.get('type', None)
         if file_type:
             queryset = queryset.filter(file_type__icontains=file_type)
         
+        duplicates_only = request.query_params.get('duplicates', None)
+        if duplicates_only == 'true':
+            queryset = queryset.filter(is_duplicate=True)
+        elif duplicates_only == 'false':
+            queryset = queryset.filter(is_duplicate=False)
+        
         serializer = FileSerializer(queryset, many=True)
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def download(self, request, pk=None):
+        """Download a file"""
+        try:
+            file_obj = UploadedFile.objects.get(pk=pk)
+            file_path = file_obj.file.path
+            
+            if os.path.exists(file_path):
+                response = FileResponse(
+                    open(file_path, 'rb'),
+                    as_attachment=True,
+                    filename=file_obj.name
+                )
+                return response
+            else:
+                raise Http404("File not found on server")
+        except UploadedFile.DoesNotExist:
+            raise Http404("File not found")
+    
+    def destroy(self, request, pk=None):
+        """Delete a file"""
+        try:
+            file = UploadedFile.objects.get(pk=pk)
+            file_name = file.name
+            file.delete()
+            return Response({
+                'message': f'File "{file_name}" deleted successfully'
+            }, status=status.HTTP_200_OK)
+        except UploadedFile.DoesNotExist:
+            return Response({
+                'error': 'File not found'
+            }, status=status.HTTP_404_NOT_FOUND)

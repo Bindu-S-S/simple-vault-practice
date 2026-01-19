@@ -7,7 +7,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
-      - backend_media:/app/media
+      - media_data:/app/media
     environment:
       - DEBUG=1
       - DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
@@ -25,4 +25,4 @@ services:
       - backend
 
 volumes:
-  backend_media:
+  media_data:
